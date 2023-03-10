@@ -8,7 +8,7 @@ from utils import *
 @dataclass
 class TrainingConfig:
     image_size = 256  # the generated image resolution
-    train_batch_size = 8
+    train_batch_size = 20
     eval_batch_size = 4  # how many images to sample during evaluation
     num_epochs = 1000
     gradient_accumulation_steps = 1
@@ -17,16 +17,37 @@ class TrainingConfig:
     save_image_epochs = 10
     save_model_epochs = 30
     mixed_precision = 'fp16'  # `no` for float32, `fp16` for automatic mixed precision
-    output_dir = 'nbi_v4/diffusion_results/cat_3'  # the model namy locally and on the HF Hub
+    output_dir = 'output/gastro_images_mask'  # the model namy locally and on the HF Hub
 
     push_to_hub = False  # whether to upload the saved model to the HF Hub
     hub_private_repo = False  
     overwrite_output_dir = True  # overwrite the old model when re-running the notebook
     seed = 0
+    
+    with_mask = True
+    
+    num_train_timesteps = 300
+    
+    def __str__(self) -> str:
+        pass
 
 config = TrainingConfig()
 
 from datasets import load_dataset
+from dataset import SubCompose,GastroCancerDataset,get_test_samples
+
+from torchvision import transforms
+
+preprocess = SubCompose(    #transforms.Compose(
+    [
+        transforms.ToTensor(),
+        transforms.Resize((config.image_size, config.image_size)),
+        transforms.RandomHorizontalFlip(),
+        transforms.RandomVerticalFlip(),
+        transforms.Normalize([0.5], [0.5]),
+    ]
+)
+
 
 # config.dataset = "huggan/smithsonian_butterflies_subset"
 # dataset = load_dataset(config.dataset, split="train")
@@ -37,25 +58,36 @@ from datasets import load_dataset
 # # dataset = load_dataset(config.dataset, split="train")
 
 # Or just load images from a local folder!
-config.dataset = "imagefolder"
-dataset = load_dataset(config.dataset, data_dir="nbi_v4/train_diff/3", split='train')
+#config.dataset = "imagefolder"
+#dataset = load_dataset(config.dataset, data_dir="nbi_v4/train_diff/3", split='train')
 
-from torchvision import transforms
+# dataset = GastroCancerDataset("gastro_cancer/xiehe_far_1",
+#                                      "crop_images",
+#                                      "annotations/crop_instances_default.json",
+#                                      transforms = preprocess)
 
-preprocess = transforms.Compose(
-    [
-        transforms.Resize((config.image_size, config.image_size)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5]),
-    ]
-)
+root_dirs = ["gastro_cancer/xiehe_far_1",
+                "gastro_cancer/xiehe_far_2",
+                "gastro_cancer/xiangya_far_2021",
+                "gastro_cancer/xiangya_far_2022"]
+dataset = GastroCancerDataset(root_dirs[0],
+                                "crop_images",
+                                "annotations/crop_instances_default.json",
+                                transforms = preprocess)
 
+for root_dir in root_dirs[1:]:
+    dataset += GastroCancerDataset(root_dir,
+                                    "crop_images",
+                                    "annotations/crop_instances_default.json",
+                                    transforms = preprocess)
+
+'''
 def transform(examples):
     images = [preprocess(image.convert("RGB")) for image in examples["image"]]
     return {"images": images}
 
 dataset.set_transform(transform)
+'''
 
 import torch
 
@@ -90,7 +122,7 @@ model = UNet2DModel(
 
 from diffusers import DDPMScheduler
 
-noise_scheduler = DDPMScheduler(num_train_timesteps=1000)
+noise_scheduler = DDPMScheduler(num_train_timesteps=config.num_train_timesteps)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 
@@ -102,7 +134,7 @@ lr_scheduler = get_cosine_schedule_with_warmup(
     num_training_steps=(len(train_dataloader) * config.num_epochs),
 )
 
-from diffusers import DDPMPipeline
+from diffusers import DDPMPipeline,DDPMPipelineMask
 
 import math
 
@@ -116,9 +148,17 @@ def make_grid(images, rows, cols):
 def evaluate(config, epoch, pipeline):
     # Sample some images from random noise (this is the backward diffusion process).
     # The default pipeline output type is `List[PIL.Image]`
-    images = pipeline(
+    if config.with_mask:
+        bg_image,mask = get_test_samples(preprocess)
+    else:
+        bg_image,mask = None,None #get_test_samples(preprocess)
+    
+    images = pipeline( #该类的代码中，有一行代码image = (image / 2 + 0.5).clamp(0, 1)为denormalize
         batch_size = config.eval_batch_size, 
         generator=torch.manual_seed(config.seed),
+        bg_image = bg_image,
+        mask = mask,
+        num_inference_steps = config.num_train_timesteps,
         return_dict=False,
     )[0]
     #print('images: ', images)
@@ -167,25 +207,31 @@ def train_loop(config, model, noise_scheduler, optimizer, train_dataloader, lr_s
         progress_bar.set_description(f"Epoch {epoch}")
 
         for step, batch in enumerate(train_dataloader):
-            clean_images = batch['images']
+            clean_images = batch['image']
             # Sample noise to add to the images
             noise = torch.randn(clean_images.shape).to(clean_images.device)
             bs = clean_images.shape[0]
             
             #todo:这里生成masks用于测试add_noise_with_mask
-            masks = generate_test_masks(clean_images.shape,clean_images.device)
+            #masks = generate_test_masks(clean_images.shape,clean_images.device)
+            masks = batch['mask']
 
             # Sample a random timestep for each image
             timesteps = torch.randint(0, noise_scheduler.num_train_timesteps, (bs,), device=clean_images.device).long()
 
             # Add noise to the clean images according to the noise magnitude at each timestep
             # (this is the forward diffusion process)
-            #noisy_images = noise_scheduler.add_noise(clean_images, noise, timesteps)
-            noisy_images = noise_scheduler.add_noise_with_mask(clean_images, masks, noise, timesteps)
+            if config.with_mask:
+                noisy_images = noise_scheduler.add_noise_with_mask(clean_images, masks, noise, timesteps)
+            else:
+                noisy_images = noise_scheduler.add_noise(clean_images, noise, timesteps)
+                masks = 1
+                
             
             with accelerator.accumulate(model):
                 # Predict the noise residual
-                noise_pred = model(noisy_images, timesteps)["sample"]
+                temp_pred = model(noisy_images, timesteps)
+                noise_pred = temp_pred["sample"]
                 #loss = F.mse_loss(noise_pred, noise)
                 #这里在计算noise的loss的时候需要添加掩码masks
                 loss = F.mse_loss(noise_pred,noise*masks)
@@ -205,7 +251,7 @@ def train_loop(config, model, noise_scheduler, optimizer, train_dataloader, lr_s
 
         # After each epoch you optionally sample some demo images with evaluate() and save the model
         if accelerator.is_main_process:
-            pipeline = DDPMPipeline(unet=accelerator.unwrap_model(model), scheduler=noise_scheduler)
+            pipeline = DDPMPipelineMask(unet=accelerator.unwrap_model(model), scheduler=noise_scheduler)
 
             if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
                 evaluate(config, epoch, pipeline)

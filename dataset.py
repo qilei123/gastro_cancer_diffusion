@@ -1,30 +1,37 @@
 from datasets import iterable_dataset
 from pycocotools.coco import COCO
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset,BatchSampler
 import os
 import random
 import cv2
 from utils import *
+from torchvision import transforms
+from torchvision.transforms import Compose
+from PIL import Image
+
+class SubCompose(Compose):
+    def __getitem__(self, index):
+        return self.transforms[index]
+    def __len__(self):
+        return len(self.transforms)
 
 class GastroCancerDataset(Dataset):
     def __init__(self,root_dir,image_folder='images',
                  ann_file_dir="annotations/instances_default.json",
-                 cat_ids = [1,],transform=None,shuffle=False):
+                 cat_ids = [1,],transforms=None,shuffle=False):
         self.root_dir = root_dir
         self.image_folder = image_folder
         self.annotation_file_dir = ann_file_dir
         self.cat_ids = cat_ids
-        self.transform = transform
+        self.transforms = transforms
         self.shuffle = shuffle
-        
+        self.instances = []
         self.coco = COCO(os.path.join(root_dir,ann_file_dir))
         self.load_with_coco_per_ann()
         #self.load_with_coco_per_img()
         
     def load_with_coco_per_ann(self):
         #以每个病变为单例进行输入
-        self.instances = []
-        
         for ann_key in self.coco.anns:
             ann = self.coco.anns[ann_key]
             instance = {}
@@ -36,6 +43,13 @@ class GastroCancerDataset(Dataset):
                 img = self.coco.loadImgs([ann["image_id"]])[0]
                 instance["img_dir"] = os.path.join(self.root_dir,self.image_folder,img['file_name'])
                 instance["img_shape"] = [img['width'],img['height']]
+                
+                #check the boundary of the bbox
+                instance["bbox"][0] = 1 if instance["bbox"][0]<0 else instance["bbox"][0]
+                instance["bbox"][1] = 1 if instance["bbox"][1]<0 else instance["bbox"][1]
+                instance["bbox"][2] = img["width"]-instance["bbox"][0] if instance["bbox"][0]+instance["bbox"][2]>img["width"] else instance["bbox"][2]
+                instance["bbox"][3] = img["height"]-instance["bbox"][1] if instance["bbox"][1]+instance["bbox"][3]>img["height"] else instance["bbox"][3]
+                
                 if os.path.exists(instance["img_dir"]):
                     self.instances.append(instance)
         if self.shuffle:
@@ -48,14 +62,38 @@ class GastroCancerDataset(Dataset):
     def __len__(self):
         return len(self.instances)    
     
-    def load_sample(self,instance):
+    def __add__(self, other):
+        self.instances  = self.instances + other.instances
+        return self
+    
+    def load_sample(self,instance,index):
         sample = {}
-        image = cv2.imread(instance["img_dir"])
-        image = image[int(instance['bbox'][1]):int(instance['bbox'][1]+instance['bbox'][3]),
-                      int(instance['bbox'][0]):int(instance['bbox'][0]+instance['bbox'][2])]
+        #opencv的加载方式来加载图片，需要注意通道的对应关系
+        #image = cv2.imread(instance["img_dir"])
+        #image = image[int(instance['bbox'][1]):int(instance['bbox'][1]+instance['bbox'][3]),
+        #              int(instance['bbox'][0]):int(instance['bbox'][0]+instance['bbox'][2])]
+        #image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        #image = Image.fromarray(image)
+        
+        #采用PIL的方式来加载图片
+        image = Image.open(instance["img_dir"])
+        
+        image = image.crop((int(instance['bbox'][0]),int(instance['bbox'][1]),
+                            int(instance['bbox'][0]+instance['bbox'][2]),int(instance['bbox'][1]+instance['bbox'][3])))
+        
+        #image.save("temp_files/"+str(index)+".jpg")
+        #print(instance['polygon'])
         mask = poly2mask(*polygon2vertex_coords(instance['polygon']),(instance['img_shape'][1],instance['img_shape'][0]))
         mask = mask[int(instance['bbox'][1]):int(instance['bbox'][1]+instance['bbox'][3]),
                     int(instance['bbox'][0]):int(instance['bbox'][0]+instance['bbox'][2])]
+        
+        #mask = Image.fromarray(mask)
+        
+        #mask = mask.crop((int(instance['bbox'][0]),int(instance['bbox'][1]),
+        #                    int(instance['bbox'][0]+instance['bbox'][2]),int(instance['bbox'][1]+instance['bbox'][3])))        
+        
+        #cv2.imwrite("temp_files/"+str(index)+".png",mask*255)
+        #mask.save("temp_files/"+str(index)+".jpg")
         
         sample["image"] = image
         sample["mask"] = mask
@@ -65,13 +103,129 @@ class GastroCancerDataset(Dataset):
     def __getitem__(self, idx):
         instance = self.instances[idx]
         
-        sample = self.load_sample(instance)
+        sample = self.load_sample(instance,index=idx)
 
-        if self.transform:
-            sample = self.transform(sample)
-
+        if self.transforms:
+            image_tensor = self.transforms[0](sample['image']) #totensor
+            mask_tensor = self.transforms[0](sample['mask']) #totensor
+            #mask_tensor = torch.stack((mask_tensor,mask_tensor,mask_tensor),dim=1)
+            mask_tensor = mask_tensor.repeat(3,1,1)
+            
+            image_mask_stack = torch.concatenate((image_tensor,mask_tensor)).to(torch.float32) 
+            
+            for i in range(1,len(self.transforms)-1):
+                image_mask_stack = self.transforms[i](image_mask_stack)
+            #sample['image'] = self.transforms[:-1](sample['image'])
+            sample['image'],sample['mask'] = torch.split(image_mask_stack, 3)
+            sample['image'] = self.transforms[-1](sample["image"])
         return sample        
+
+def get_test_samples(preprocess):
+    #todo:这里需要将四张测试图片加载进来，并且需要进行preprocess
+    test_images_record = open('choose_test_gastro_images.txt')
+    
+    records = []
+    
+    line = test_images_record.readline()
+    
+    while line:
         
+        records.append(line[:-1])
+        
+        line = test_images_record.readline()
+        
+    image_list = records[::2]
+    ann_list = records[1::2]
+    
+    sample_images = []
+    sample_masks = []
+    
+    for image_name,ann in zip(image_list,ann_list):
+        ann = json.loads(ann)
+        sample = {}
+        
+        image = Image.open(os.path.join("gastro_images_test",image_name))
+        
+        height = image.height
+        
+        width = image.width
+        
+        image = image.crop((int(ann['bbox'][0]),int(ann['bbox'][1]),
+                      int(ann['bbox'][0]+ann['bbox'][2]),int(ann['bbox'][1]+ann['bbox'][3])))
+        
+        sample["image"] = image
+        
+        #image.save("test.jpg")
+
+        mask = poly2mask(*polygon2vertex_coords(ann["segmentation"][0]),(height,width))
+        mask = mask[int(ann['bbox'][1]):int(ann['bbox'][1]+ann['bbox'][3]),
+                    int(ann['bbox'][0]):int(ann['bbox'][0]+ann['bbox'][2])]   
+        sample["mask"]= mask
+        
+        #cv2.imwrite("mask.png",mask*255)     
+        if preprocess:
+            image_tensor = preprocess[0](sample['image']) #totensor
+            mask_tensor = preprocess[0](sample['mask']) #totensor
+            #mask_tensor = torch.stack((mask_tensor,mask_tensor,mask_tensor),dim=1)
+            mask_tensor = mask_tensor.repeat(3,1,1)
+            
+            image_mask_stack = torch.concatenate((image_tensor,mask_tensor)).to(torch.float32) 
+            
+            #for i in range(1,len(preprocess)-1): #不需要再做flip
+            image_mask_stack = preprocess[1](image_mask_stack)#scale操作
+            #sample['image'] = self.transforms[:-1](sample['image'])
+            sample['image'],sample['mask'] = torch.split(image_mask_stack, 3)
+            sample['image'] = preprocess[4](sample["image"])  #只在image上做normalize 
+            
+        sample_images.append(sample['image'])
+        sample_masks.append(sample["mask"])
+        
+    images = torch.stack(sample_images)
+    masks = torch.stack(sample_masks)
+    
+    #mask_images = images*masks
+        
+    return images,masks  
+
+
+def test_dataset():
+    preprocess = SubCompose(
+        [
+            transforms.ToTensor(),
+            transforms.Resize((256, 256)),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            transforms.Normalize([0.5], [0.5]),
+        ]
+    )
+    
+    root_dirs = ["gastro_cancer/xiehe_far_1",
+                 "gastro_cancer/xiehe_far_2",
+                 "gastro_cancer/xiangya_far_2021",
+                 "gastro_cancer/xiangya_far_2022"]
+    gc_dataset = GastroCancerDataset(root_dirs[0],
+                                    "crop_images",
+                                    "annotations/crop_instances_default.json",
+                                    transforms = preprocess)
+    
+    for root_dir in root_dirs[1:]:
+        print(root_dir)
+        gc_dataset += GastroCancerDataset(root_dir,
+                                        "crop_images",
+                                        "annotations/crop_instances_default.json",
+                                        transforms = preprocess)
+    #gc_dataset[324]
+    for i in range(len(gc_dataset)):
+        gc_dataset[i]    
+
 if __name__ == '__main__':
-    gc_dataset = GastroCancerDataset("gastro_cancer/xiehe_far_1","crop_images","annotations/crop_instances_default.json")
-    gc_dataset[0]
+    preprocess = SubCompose(
+        [
+            transforms.ToTensor(),
+            transforms.Resize((256, 256)),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            transforms.Normalize([0.5], [0.5]),
+        ]
+    )
+    get_test_samples(preprocess)

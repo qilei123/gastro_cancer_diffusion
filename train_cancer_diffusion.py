@@ -7,28 +7,30 @@ from utils import *
 
 @dataclass
 class TrainingConfig:
-    image_size = 512  # the generated image resolution
-    train_batch_size = 4
+    image_size = 128  # the generated image resolution
+    train_batch_size = 64
     eval_batch_size = 4  # how many images to sample during evaluation
     num_epochs = 1000
     gradient_accumulation_steps = 1
-    learning_rate = 1e-4
+    learning_rate = 0.0001
     lr_warmup_steps = 500
     save_image_epochs = 10
     save_model_epochs = 30
     mixed_precision = 'fp16'  # `no` for float32, `fp16` for automatic mixed precision
-    output_dir = 'output/gastro_images_mask_no_crop'  # the model namy locally and on the HF Hub
+    output_dir = 'output/gastro_images_mask_more_data_128_blur_mask'  # the model namy locally and on the HF Hub
 
     push_to_hub = False  # whether to upload the saved model to the HF Hub
     hub_private_repo = False  
     overwrite_output_dir = True  # overwrite the old model when re-running the notebook
     seed = 0
     
-    with_mask = True
+    with_mask = True #是否用mask生成noise掩码
     
     num_train_timesteps = 1000
     
-    with_crop = False #输入是用局部（True）还是用整图(False)
+    with_crop = True #输入是用局部（True）还是用整图(False)
+    
+    blur_mask = True
     
     def __str__(self) -> str:
         pass
@@ -72,11 +74,11 @@ dataset_records = {"gastro_cancer/xiehe_far_1":[1], #0
                 "gastro_cancer/xiehe_far_2":[1], #1
                 "gastro_cancer/xiangya_far_2021":[1], #2
                 "gastro_cancer/xiangya_far_2022":[1], #3
-                #"gastro_cancer/gastro8-12/2021-2022年癌变已标注/20221111/2021_2022_癌变_20221111":[1,4,5], #4
-                #"gastro_cancer/gastro8-12/低级别_2021_2022已标注/2021_2022_低级别_20221110":[1,4,5], #5
-                #"gastro_cancer/gastro8-12/协和2022_第一批胃早癌视频裁图已标注/20221115/癌变2022_20221115":[1,4,5], #6
-                #"gastro_cancer/gastro8-12/协和2022_第二批胃早癌视频裁图已标注/协和_2022_癌变_2_20221117":[1,4,5], #7
-                #"gastro_cancer/gastro8-12/协和21-11月~2022-5癌变已标注/协和2021-11月_2022-5癌变_20221121":[1,4,5], #8
+                "gastro_cancer/gastro8-12/2021-2022年癌变已标注/20221111/2021_2022_癌变_20221111":[1,4,5], #4
+                "gastro_cancer/gastro8-12/低级别_2021_2022已标注/2021_2022_低级别_20221110":[1,4,5], #5
+                "gastro_cancer/gastro8-12/协和2022_第一批胃早癌视频裁图已标注/20221115/癌变2022_20221115":[1,4,5], #6
+                "gastro_cancer/gastro8-12/协和2022_第二批胃早癌视频裁图已标注/协和_2022_癌变_2_20221117":[1,4,5], #7
+                "gastro_cancer/gastro8-12/协和21-11月~2022-5癌变已标注/协和2021-11月_2022-5癌变_20221121":[1,4,5], #8
                 }
 #dataset = GastroCancerDataset(root_dirs[0],
 #                                transforms = preprocess)
@@ -84,11 +86,10 @@ dataset = None
 for root_dir in dataset_records:
     if dataset ==None:
         dataset = GastroCancerDataset(root_dir,cat_ids=dataset_records[root_dir],
-                                        transforms = preprocess,with_crop=config.with_crop) 
+                                        transforms = preprocess,with_crop=config.with_crop,blur_mask=config.blur_mask) 
     else:       
         dataset += GastroCancerDataset(root_dir,cat_ids=dataset_records[root_dir],
                                         transforms = preprocess,with_crop=config.with_crop)
-
 
 '''
 def transform(examples):
@@ -103,7 +104,6 @@ import torch
 train_dataloader = torch.utils.data.DataLoader(dataset, batch_size=config.train_batch_size, shuffle=True)
 
 from diffusers import UNet2DModel
-
 
 model = UNet2DModel(
     sample_size=config.image_size,  # the target image resolution
@@ -158,7 +158,7 @@ def evaluate(config, epoch, pipeline):
     # Sample some images from random noise (this is the backward diffusion process).
     # The default pipeline output type is `List[PIL.Image]`
     if config.with_mask:
-        bg_image,mask = get_test_samples(preprocess,config.with_crop)
+        bg_image,mask = get_test_samples(preprocess,config.with_crop,blur_mask=config.blur_mask)
     else:
         bg_image,mask = None,None #get_test_samples(preprocess)
     

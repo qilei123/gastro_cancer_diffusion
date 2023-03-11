@@ -18,14 +18,17 @@ class SubCompose(Compose):
 class GastroCancerDataset(Dataset):
     def __init__(self,root_dir,image_folder='images',
                  ann_file_dir="annotations/instances_default.json",
-                 cat_ids = [1,],transforms=None,shuffle=False):
+                 cat_ids = [1,],transforms=None,shuffle=False, with_crop = False):
         self.root_dir = root_dir
         self.image_folder = image_folder
         self.annotation_file_dir = ann_file_dir
         self.cat_ids = cat_ids
         self.transforms = transforms
         self.shuffle = shuffle
+        self.with_crop = with_crop
+        
         self.instances = []
+        
         self.coco = COCO(os.path.join(root_dir,ann_file_dir))
         self.load_with_coco_per_ann()
         #self.load_with_coco_per_img()
@@ -77,15 +80,16 @@ class GastroCancerDataset(Dataset):
         
         #采用PIL的方式来加载图片
         image = Image.open(instance["img_dir"])
-        
-        image = image.crop((int(instance['bbox'][0]),int(instance['bbox'][1]),
-                            int(instance['bbox'][0]+instance['bbox'][2]),int(instance['bbox'][1]+instance['bbox'][3])))
+        if self.with_crop:
+            image = image.crop((int(instance['bbox'][0]),int(instance['bbox'][1]),
+                                int(instance['bbox'][0]+instance['bbox'][2]),int(instance['bbox'][1]+instance['bbox'][3])))
         
         #image.save("temp_files/"+str(index)+".jpg")
         #print(instance['polygon'])
         mask = poly2mask(*polygon2vertex_coords(instance['polygon']),(instance['img_shape'][1],instance['img_shape'][0]))
-        mask = mask[int(instance['bbox'][1]):int(instance['bbox'][1]+instance['bbox'][3]),
-                    int(instance['bbox'][0]):int(instance['bbox'][0]+instance['bbox'][2])]
+        if self.with_crop:
+            mask = mask[int(instance['bbox'][1]):int(instance['bbox'][1]+instance['bbox'][3]),
+                        int(instance['bbox'][0]):int(instance['bbox'][0]+instance['bbox'][2])]
         
         #mask = Image.fromarray(mask)
         
@@ -120,7 +124,7 @@ class GastroCancerDataset(Dataset):
             sample['image'] = self.transforms[-1](sample["image"])
         return sample        
 
-def get_test_samples(preprocess):
+def get_test_samples(preprocess,with_crop=False):
     #todo:这里需要将四张测试图片加载进来，并且需要进行preprocess
     test_images_record = open('choose_test_gastro_images.txt')
     
@@ -149,17 +153,18 @@ def get_test_samples(preprocess):
         height = image.height
         
         width = image.width
-        
-        image = image.crop((int(ann['bbox'][0]),int(ann['bbox'][1]),
-                      int(ann['bbox'][0]+ann['bbox'][2]),int(ann['bbox'][1]+ann['bbox'][3])))
+        if with_crop:
+            image = image.crop((int(ann['bbox'][0]),int(ann['bbox'][1]),
+                        int(ann['bbox'][0]+ann['bbox'][2]),int(ann['bbox'][1]+ann['bbox'][3])))
         
         sample["image"] = image
         
         #image.save("test.jpg")
 
         mask = poly2mask(*polygon2vertex_coords(ann["segmentation"][0]),(height,width))
-        mask = mask[int(ann['bbox'][1]):int(ann['bbox'][1]+ann['bbox'][3]),
-                    int(ann['bbox'][0]):int(ann['bbox'][0]+ann['bbox'][2])]   
+        if with_crop:
+            mask = mask[int(ann['bbox'][1]):int(ann['bbox'][1]+ann['bbox'][3]),
+                        int(ann['bbox'][0]):int(ann['bbox'][0]+ann['bbox'][2])]   
         sample["mask"]= mask
         
         #cv2.imwrite("mask.png",mask*255)     

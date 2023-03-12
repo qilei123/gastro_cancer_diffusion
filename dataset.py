@@ -126,7 +126,7 @@ class GastroCancerDataset(Dataset):
             #mask_tensor = torch.stack((mask_tensor,mask_tensor,mask_tensor),dim=1)
             mask_tensor = mask_tensor.repeat(3,1,1)
             
-            image_mask_stack = torch.concatenate((image_tensor,mask_tensor)).to(torch.float32) 
+            image_mask_stack = torch.cat((image_tensor,mask_tensor)).to(torch.float32) 
             
             for i in range(1,len(self.transforms)-1):
                 image_mask_stack = self.transforms[i](image_mask_stack)
@@ -189,7 +189,7 @@ def get_test_samples(preprocess,with_crop=False,blur_mask = False):
             #mask_tensor = torch.stack((mask_tensor,mask_tensor,mask_tensor),dim=1)
             mask_tensor = mask_tensor.repeat(3,1,1)
             
-            image_mask_stack = torch.concatenate((image_tensor,mask_tensor)).to(torch.float32) 
+            image_mask_stack = torch.cat((image_tensor,mask_tensor)).to(torch.float32) 
             
             #for i in range(1,len(preprocess)-1): #不需要再做flip
             image_mask_stack = preprocess[1](image_mask_stack)#scale操作

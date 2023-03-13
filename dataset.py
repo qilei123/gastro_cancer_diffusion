@@ -9,7 +9,7 @@ from torchvision import transforms
 from torchvision.transforms import Compose
 from PIL import Image
 
-DEBUG=False
+DEBUG=True
 
 class SubCompose(Compose):
     def __getitem__(self, index):
@@ -258,9 +258,9 @@ def test_dataset():
                                         "crop_images",
                                         "annotations/crop_instances_default.json",
                                         transforms = preprocess,blur_mask=True)
-    gc_dataset[324]
-    #for i in range(len(gc_dataset)):
-    #    gc_dataset[i]    
+    #gc_dataset[324]
+    for i in range(len(gc_dataset)):
+        gc_dataset[i]    
 
 def test_get_test_samples():
     preprocess = SubCompose(
@@ -276,4 +276,4 @@ def test_get_test_samples():
 
 if __name__ == '__main__':
     test_dataset()
-    test_get_test_samples()
+    #test_get_test_samples()

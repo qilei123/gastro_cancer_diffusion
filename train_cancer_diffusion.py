@@ -8,16 +8,16 @@ from utils import *
 @dataclass
 class TrainingConfig:
     image_size = 256  # the generated image resolution
-    train_batch_size = 8
+    train_batch_size = 20
     eval_batch_size = 4  # how many images to sample during evaluation
     num_epochs = 1000
     gradient_accumulation_steps = 1
     learning_rate = 1e-4
-    lr_warmup_steps = 400
+    lr_warmup_steps = 500
     save_image_epochs = 10
     save_model_epochs = 30
     mixed_precision = 'fp16'  # `no` for float32, `fp16` for automatic mixed precision
-    output_dir = 'output/gastro_images_mask_more_data_256_n400'  # the model namy locally and on the HF Hub
+    output_dir = 'output/gastro_images_mask_more_data_256_n500_no_crop'  # the model namy locally and on the HF Hub
 
     push_to_hub = False  # whether to upload the saved model to the HF Hub
     hub_private_repo = False  
@@ -28,9 +28,9 @@ class TrainingConfig:
     
     num_train_timesteps = 500
     
-    with_crop = True #输入是用局部（True）还是用整图(False)
+    with_crop = False #输入是用局部（True）还是用整图(False)
     
-    blur_mask = True
+    blur_mask = False
     
     bbox_extend = 1.5
     

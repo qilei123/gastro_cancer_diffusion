@@ -8,25 +8,31 @@ from utils import *
 @dataclass
 class TrainingConfig:
     image_size = 256  # the generated image resolution
-    train_batch_size = 16
+    train_batch_size = 8
     eval_batch_size = 4  # how many images to sample during evaluation
     num_epochs = 1000
     gradient_accumulation_steps = 1
     learning_rate = 1e-4
-    lr_warmup_steps = 500
+    lr_warmup_steps = 400
     save_image_epochs = 10
     save_model_epochs = 30
     mixed_precision = 'fp16'  # `no` for float32, `fp16` for automatic mixed precision
-    output_dir = 'output/gastro_images_mask_more_data_with_blur_100'  # the model namy locally and on the HF Hub
+    output_dir = 'output/gastro_images_mask_more_data_256_n400'  # the model namy locally and on the HF Hub
 
     push_to_hub = False  # whether to upload the saved model to the HF Hub
     hub_private_repo = False  
     overwrite_output_dir = True  # overwrite the old model when re-running the notebook
     seed = 0
     
-    with_mask = True
+    with_mask = True #是否用mask生成noise掩码
     
-    num_train_timesteps = 100
+    num_train_timesteps = 500
+    
+    with_crop = True #输入是用局部（True）还是用整图(False)
+    
+    blur_mask = True
+    
+    bbox_extend = 1.5
     
     def __str__(self) -> str:
         pass
@@ -82,10 +88,10 @@ dataset = None
 for root_dir in dataset_records:
     if dataset ==None:
         dataset = GastroCancerDataset(root_dir,cat_ids=dataset_records[root_dir],
-                                        transforms = preprocess) 
+                                        transforms = preprocess,with_crop=config.with_crop,blur_mask=config.blur_mask,bbox_extend=config.bbox_extend) 
     else:       
         dataset += GastroCancerDataset(root_dir,cat_ids=dataset_records[root_dir],
-                                        transforms = preprocess)
+                                        transforms = preprocess,with_crop=config.with_crop)
 
 '''
 def transform(examples):
@@ -100,7 +106,6 @@ import torch
 train_dataloader = torch.utils.data.DataLoader(dataset, batch_size=config.train_batch_size, shuffle=True)
 
 from diffusers import UNet2DModel
-
 
 model = UNet2DModel(
     sample_size=config.image_size,  # the target image resolution
@@ -155,28 +160,31 @@ def evaluate(config, epoch, pipeline):
     # Sample some images from random noise (this is the backward diffusion process).
     # The default pipeline output type is `List[PIL.Image]`
     if config.with_mask:
-        bg_image,mask = get_test_samples(preprocess)
+        bg_image,mask = get_test_samples(preprocess,config.with_crop,blur_mask=config.blur_mask,bbox_extend=config.bbox_extend)
     else:
         bg_image,mask = None,None #get_test_samples(preprocess)
     
-    images = pipeline( #该类的代码中，有一行代码image = (image / 2 + 0.5).clamp(0, 1)为denormalize
+    images,image_with_bg = pipeline( #该类的代码中，有一行代码image = (image / 2 + 0.5).clamp(0, 1)为denormalize
         batch_size = config.eval_batch_size, 
         generator=torch.manual_seed(config.seed),
         bg_image = bg_image,
         mask = mask,
         num_inference_steps = config.num_train_timesteps,
         return_dict=False,
-    )[0]
+    )
     #print('images: ', images)
     #print('images info: ', len(images), len(images[0]))
 
     # Make a grid out of the images
     image_grid = make_grid(images, rows=2, cols=2)
+    
+    image_with_bg_gird = make_grid(image_with_bg, rows=2, cols=2)
 
     # Save the images
     test_dir = os.path.join(config.output_dir, "samples")
     os.makedirs(test_dir, exist_ok=True)
     image_grid.save(f"{test_dir}/{epoch:04d}.png")
+    image_with_bg_gird.save(f"{test_dir}/{epoch:04d}_with_bg.png")
 
 
 from accelerate import Accelerator

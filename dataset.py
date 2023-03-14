@@ -11,6 +11,9 @@ from PIL import Image
 from math import floor
 import pickle
 from tqdm import tqdm
+from PIL import ImageFilter
+from scipy import ndimage
+
 
 DEBUG=False
 
@@ -358,6 +361,58 @@ def test_get_test_samples():
     )
     get_test_samples(preprocess,with_crop=True,blur_mask = False,dynamic_blur_mask=True,bbox_extend=1.5)
 
+def test_patchs():
+    test_images_record = open('choose_test_gastro_images.txt')
+    
+    patchs_dir = "output/gastro_images_mask_data1_256_n600_crop_be1/samples/0279.png"
+    #patchs_dir = "output/gastro_images_mask_data1_256_n500_crop_be1/samples/0439.png"
+    
+    patchs = Image.open(patchs_dir)
+    
+    patch_images = []
+    patch_images.append(patchs.crop((0,0,patchs.width/2,patchs.height/2)))
+    patch_images.append(patchs.crop((patchs.width/2,0,patchs.width,patchs.height/2)))
+    patch_images.append(patchs.crop((0,patchs.height/2,patchs.width/2,patchs.height)))
+    patch_images.append(patchs.crop((patchs.width/2,patchs.height/2,patchs.width,patchs.height)))
+    
+    records = []
+    
+    line = test_images_record.readline()
+    
+    #bbox_extend-=1
+    
+    while line:
+        
+        records.append(line[:-1])
+        
+        line = test_images_record.readline()
+        
+    image_list = records[::2]
+    ann_list = records[1::2]
+    
+    
+    for image_name,ann,patch in zip(image_list,ann_list,patch_images):
+        
+        ann = json.loads(ann)    
+        image = Image.open(os.path.join("gastro_images_test",image_name))
+
+        mask = poly2mask(*polygon2vertex_coords(ann["segmentation"][0]),(image.height,image.width))
+        
+        patch = patch.resize((int(ann['bbox'][2]),int(ann['bbox'][3])))
+        patch_image = Image.new("RGB",image.size,(0,0,0))
+        patch_image.paste(patch, (int(ann['bbox'][0]),int(ann['bbox'][1])))
+        
+        mask = ndimage.binary_erosion(mask,iterations=25).astype(mask.dtype)
+        
+        mask = Image.fromarray(mask*255/2).convert('L')
+        mask = mask.filter(ImageFilter.GaussianBlur(15))
+        image.paste(patch_image, (0,0),mask)
+        
+        image.save(os.path.join("results",image_name))
+        
+
 if __name__ == '__main__':
     #test_dataset()
-    test_get_test_samples()
+    #test_get_test_samples()
+    test_patchs()
+    pass

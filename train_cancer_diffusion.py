@@ -12,14 +12,14 @@ class TrainingConfig:
     image_size = 256  # the generated image resolution
     train_batch_size = 20
     eval_batch_size = 4  # how many images to sample during evaluation
-    num_epochs = 1000
+    num_epochs = 500
     gradient_accumulation_steps = 1
     learning_rate = 1e-4
     lr_warmup_steps = 500
     save_image_epochs = 10
     save_model_epochs = 30
     mixed_precision = 'fp16'  # `no` for float32, `fp16` for automatic mixed precision
-    output_dir = 'output/gastro_images_mask_data1_256_n500_crop_be1.2'  # the model namy locally and on the HF Hub
+    output_dir = 'output/gastro_images_mask_data1_256_n700_crop_be1'  # the model namy locally and on the HF Hub
 
     push_to_hub = False  # whether to upload the saved model to the HF Hub
     hub_private_repo = False  
@@ -28,7 +28,7 @@ class TrainingConfig:
     
     with_mask = True #是否用mask生成noise掩码
     
-    num_train_timesteps = 500
+    num_train_timesteps = 700
     
     with_crop = True #输入是用局部（True）还是用整图(False)
     
@@ -36,7 +36,7 @@ class TrainingConfig:
     dynamic_blur_mask = True
     blur_kernel_scale = 20
     
-    bbox_extend = 1.2
+    bbox_extend = 1
     
     dataset_name='dataset1'
     

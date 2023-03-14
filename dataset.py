@@ -8,8 +8,32 @@ from utils import *
 from torchvision import transforms
 from torchvision.transforms import Compose
 from PIL import Image
+from math import floor
+import pickle
+from tqdm import tqdm
 
-DEBUG=True
+DEBUG=False
+
+dataset_names = ['dataset1','dataset2']
+
+dataset_records = {"dataset1":
+                {"gastro_cancer/xiehe_far_1":[1], #0
+                "gastro_cancer/xiehe_far_2":[1], #1
+                "gastro_cancer/xiangya_far_2021":[1], #2
+                "gastro_cancer/xiangya_far_2022":[1], #3
+                },
+                "dataset2":
+                {"gastro_cancer/xiehe_far_1":[1], #0
+                "gastro_cancer/xiehe_far_2":[1], #1
+                "gastro_cancer/xiangya_far_2021":[1], #2
+                "gastro_cancer/xiangya_far_2022":[1], #3
+                "gastro_cancer/gastro8-12/2021-2022年癌变已标注/20221111/2021_2022_癌变_20221111":[1,4,5], #4
+                "gastro_cancer/gastro8-12/低级别_2021_2022已标注/2021_2022_低级别_20221110":[1,4,5], #5
+                "gastro_cancer/gastro8-12/协和2022_第一批胃早癌视频裁图已标注/20221115/癌变2022_20221115":[1,4,5], #6
+                "gastro_cancer/gastro8-12/协和2022_第二批胃早癌视频裁图已标注/协和_2022_癌变_2_20221117":[1,4,5], #7
+                "gastro_cancer/gastro8-12/协和21-11月~2022-5癌变已标注/协和2021-11月_2022-5癌变_20221121":[1,4,5], #8
+                }
+                }
 
 class SubCompose(Compose):
     def __getitem__(self, index):
@@ -18,10 +42,17 @@ class SubCompose(Compose):
         return len(self.transforms)
 
 class GastroCancerDataset(Dataset):
-    def __init__(self,root_dir,image_folder='images',
+    def __init__(self,root_dir,dataset_name = 'dataset1',image_folder='images',
                  ann_file_dir="annotations/instances_default.json",
                  cat_ids = [1,],transforms=None,shuffle=False, 
-                 with_crop = False,blur_mask = False,bbox_extend = 1):
+                 with_crop = False,
+                 blur_mask = False, dynamic_blur_mask = False, blur_kernel_scale = 10,
+                 bbox_extend = 1):
+        if dataset_name is not None:
+            assert dataset_name in dataset_records,"No dataset name: "+dataset_name  
+            
+        self.dataset_name = dataset_name  
+    
         self.root_dir = root_dir
         self.image_folder = image_folder
         self.annotation_file_dir = ann_file_dir
@@ -30,10 +61,25 @@ class GastroCancerDataset(Dataset):
         self.shuffle = shuffle
         self.with_crop = with_crop
         self.blur_mask = blur_mask
+        self.dynamic_blur_mask = dynamic_blur_mask
+        self.blur_kernel_scale = blur_kernel_scale
         assert bbox_extend>=1,"bbox_extend should larger than 1"
-        self.bbox_extend = bbox_extend-1
+        self.bbox_extend = bbox_extend
         
         self.instances = []
+        self.cache_datas = []
+        
+        '''
+        #todo:待开发，采用大文件方式存储数据
+        if dataset_name is None:
+            self.cache_datas = []
+        elif not os.path.isfile(dataset_name+".cache"):
+            self.cache_datas = []
+        else:
+            fptr = open(dataset_name+".cache", "rb")
+            self.cache_datas = pickle.load(fptr)
+            fptr.close()
+        '''
         
         self.coco = COCO(os.path.join(root_dir,ann_file_dir))
         self.load_with_coco_per_ann()
@@ -47,18 +93,13 @@ class GastroCancerDataset(Dataset):
             if len(ann["segmentation"])>0 and len(ann["segmentation"][0])>0 and (ann['category_id'] in self.cat_ids):#这里默认每个目标只有一个segmentation标注
                 instance["polygon"] = ann["segmentation"][0]
                 instance["bbox"] = ann["bbox"]
-                
-                if self.bbox_extend>0:
-                    instance["bbox"][0] -= ann["bbox"][2]*self.bbox_extend/2
-                    instance["bbox"][1] -= ann["bbox"][3]*self.bbox_extend/2
-                    instance["bbox"][2] += ann["bbox"][2]*self.bbox_extend
-                    instance["bbox"][3] += ann["bbox"][3]*self.bbox_extend
                     
                 instance["cat_id"] = ann["category_id"]
                 
                 img = self.coco.loadImgs([ann["image_id"]])[0]
                 instance["img_dir"] = os.path.join(self.root_dir,self.image_folder,img['file_name'])
                 instance["img_shape"] = [img['width'],img['height']]
+                instance["img_width"],instance["img_height"] = img['width'],img['height']
                 
                 #check the boundary of the bbox
                 instance["bbox"][0] = 1 if instance["bbox"][0]<0 else instance["bbox"][0]
@@ -68,8 +109,8 @@ class GastroCancerDataset(Dataset):
                 
                 if os.path.exists(instance["img_dir"]):
                     self.instances.append(instance)
-        if self.shuffle:
-            random.shuffle(self.instances)
+        #if self.shuffle:
+        #    random.shuffle(self.instances)
             
     def load_with_coco_per_img(self):
         #以每张图片作为单例进行输入
@@ -90,37 +131,65 @@ class GastroCancerDataset(Dataset):
         #              int(instance['bbox'][0]):int(instance['bbox'][0]+instance['bbox'][2])]
         #image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         #image = Image.fromarray(image)
-        
-        #采用PIL的方式来加载图片
-        image = Image.open(instance["img_dir"])
-        if self.with_crop:
-            image = image.crop((int(instance['bbox'][0]),int(instance['bbox'][1]),
-                                int(instance['bbox'][0]+instance['bbox'][2]),int(instance['bbox'][1]+instance['bbox'][3])))
-        if DEBUG:
-            image.save("temp_files/"+str(index)+".jpg")
-        #print(instance['polygon'])
-        mask = poly2mask(*polygon2vertex_coords(instance['polygon']),(instance['img_shape'][1],instance['img_shape'][0]))
-        
-        #todo:获得一个数最近的奇数,这里之后可以做kernal size
-        #ksize = floor(instance['bbox'][2])+1-floor(instance['bbox'][2])%2
-        
-        if self.blur_mask:
-            mask = cv2.GaussianBlur(mask, (15,15), 0)
-        
-        if self.with_crop:
-            mask = mask[int(instance['bbox'][1]):int(instance['bbox'][1]+instance['bbox'][3]),
-                        int(instance['bbox'][0]):int(instance['bbox'][0]+instance['bbox'][2])]
-        
-        #mask = Image.fromarray(mask)
-        
-        #mask = mask.crop((int(instance['bbox'][0]),int(instance['bbox'][1]),
-        #                    int(instance['bbox'][0]+instance['bbox'][2]),int(instance['bbox'][1]+instance['bbox'][3])))        
-        if DEBUG:
-            cv2.imwrite("temp_files/"+str(index)+".png",mask*255)
-        #mask.save("temp_files/"+str(index)+".jpg")
-        
-        sample["image"] = image
-        sample["mask"] = mask
+        if len(self.instances) > len(self.cache_datas):
+            #采用PIL的方式来加载图片
+            image = Image.open(instance["img_dir"])
+
+            if self.bbox_extend>1:
+                instance["bbox"][0] -= instance["bbox"][2]*(self.bbox_extend-1)/2
+                instance["bbox"][1] -= instance["bbox"][3]*(self.bbox_extend-1)/2
+                instance["bbox"][2] = instance["bbox"][2]*self.bbox_extend
+                instance["bbox"][3] = instance["bbox"][3]*self.bbox_extend  
+  
+            #check the boundary of the bbox
+            instance["bbox"][0] = 1 if instance["bbox"][0]<0 else instance["bbox"][0]
+            instance["bbox"][1] = 1 if instance["bbox"][1]<0 else instance["bbox"][1]
+            instance["bbox"][2] = instance["img_width"]-instance["bbox"][0] if instance["bbox"][0]+instance["bbox"][2]>instance["img_width"] else instance["bbox"][2]
+            instance["bbox"][3] = instance["img_height"]-instance["bbox"][1] if instance["bbox"][1]+instance["bbox"][3]>instance["img_height"] else instance["bbox"][3]          
+            
+            if self.with_crop:
+                image = image.crop((int(instance['bbox'][0]),int(instance['bbox'][1]),
+                                    int(instance['bbox'][0]+instance['bbox'][2]),int(instance['bbox'][1]+instance['bbox'][3])))
+            if DEBUG:
+                image.save("temp_files/"+str(index)+".jpg")
+            #print(instance['polygon'])
+            mask = poly2mask(*polygon2vertex_coords(instance['polygon']),(instance['img_shape'][1],instance['img_shape'][0]))
+            
+            #todo:获得一个数最近的奇数,这里之后可以做kernal size
+            if self.dynamic_blur_mask:
+                min_box_edge = min(instance['bbox'][2],instance['bbox'][3])
+                ksize = floor(min_box_edge/self.blur_kernel_scale)+1-floor(min_box_edge/self.blur_kernel_scale)%2
+            else:
+                ksize = 15
+            
+            if self.blur_mask:
+                mask = cv2.GaussianBlur(mask, (ksize,ksize), 0)
+            
+            if self.with_crop:
+                mask = mask[int(instance['bbox'][1]):int(instance['bbox'][1]+instance['bbox'][3]),
+                            int(instance['bbox'][0]):int(instance['bbox'][0]+instance['bbox'][2])]
+            
+            #mask = Image.fromarray(mask)
+            
+            #mask = mask.crop((int(instance['bbox'][0]),int(instance['bbox'][1]),
+            #                    int(instance['bbox'][0]+instance['bbox'][2]),int(instance['bbox'][1]+instance['bbox'][3])))        
+            if DEBUG:
+                cv2.imwrite("temp_files/"+str(index)+".png",(mask*0.5+0.2)*255)
+            #mask.save("temp_files/"+str(index)+".jpg")
+            
+            sample["image"] = image
+            sample["mask"] = mask
+            self.cache_datas.append(sample) 
+        elif len(self.instances) == len(self.cache_datas):
+            sample = self.cache_datas[index]
+            '''todo:cache待开发'''
+            '''
+            if self.dataset_name is not  None:
+                if not os.path.isfile(self.dataset_name+".cache"):
+                    fptr = open(self.dataset_name+".cache", "wb")  # open file in write binary mode
+                    pickle.dump(self.cache_datas, fptr)  # dump list data into file 
+                    fptr.close()    
+            '''
         
         return sample
     
@@ -128,6 +197,8 @@ class GastroCancerDataset(Dataset):
         instance = self.instances[idx]
         
         sample = self.load_sample(instance,index=idx)
+        
+        tensor_sample = {}
 
         if self.transforms:
             image_tensor = self.transforms[0](sample['image']) #totensor
@@ -140,11 +211,13 @@ class GastroCancerDataset(Dataset):
             for i in range(1,len(self.transforms)-1):
                 image_mask_stack = self.transforms[i](image_mask_stack)
             #sample['image'] = self.transforms[:-1](sample['image'])
-            sample['image'],sample['mask'] = torch.split(image_mask_stack, 3)
-            sample['image'] = self.transforms[-1](sample["image"])
-        return sample        
+            tensor_sample['image'],tensor_sample['mask'] = torch.split(image_mask_stack, 3)
+            tensor_sample['image'] = self.transforms[-1](tensor_sample["image"])
+        return tensor_sample        
 
-def get_test_samples(preprocess,with_crop=False,blur_mask = False,bbox_extend=1):
+def get_test_samples(preprocess,with_crop=False,blur_mask = False,
+                     dynamic_blur_mask = False,blur_kernel_scale = 10,
+                     bbox_extend=1):
     #todo:这里需要将四张测试图片加载进来，并且需要进行preprocess
     test_images_record = open('choose_test_gastro_images.txt')
     
@@ -152,7 +225,7 @@ def get_test_samples(preprocess,with_crop=False,blur_mask = False,bbox_extend=1)
     
     line = test_images_record.readline()
     
-    bbox_extend-=1
+    #bbox_extend-=1
     
     while line:
         
@@ -169,11 +242,11 @@ def get_test_samples(preprocess,with_crop=False,blur_mask = False,bbox_extend=1)
     for image_name,ann in zip(image_list,ann_list):
         ann = json.loads(ann)
         
-        if bbox_extend>0:
-            ann["bbox"][0] -= ann["bbox"][2]*bbox_extend/2
-            ann["bbox"][1] -= ann["bbox"][3]*bbox_extend/2
-            ann["bbox"][2] += ann["bbox"][2]*bbox_extend
-            ann["bbox"][3] += ann["bbox"][3]*bbox_extend
+        if bbox_extend>1:
+            ann["bbox"][0] -= ann["bbox"][2]*(bbox_extend-1)/2
+            ann["bbox"][1] -= ann["bbox"][3]*(bbox_extend-1)/2
+            ann["bbox"][2] = ann["bbox"][2]*bbox_extend
+            ann["bbox"][3] = ann["bbox"][3]*bbox_extend
         
         sample = {}
         
@@ -198,15 +271,22 @@ def get_test_samples(preprocess,with_crop=False,blur_mask = False,bbox_extend=1)
 
         mask = poly2mask(*polygon2vertex_coords(ann["segmentation"][0]),(height,width))
         
+        #添加掩码边缘高斯模糊的操作
+        if dynamic_blur_mask:
+            min_box_edge = min(ann['bbox'][2],ann['bbox'][3])
+            ksize = floor(min_box_edge/blur_kernel_scale)+1-floor(min_box_edge/blur_kernel_scale)%2
+        else:
+            ksize = 15
+        
         if blur_mask:
-            mask = cv2.GaussianBlur(mask, (15,15), 0)
+            mask = cv2.GaussianBlur(mask, (ksize,ksize), 0)
         
         if with_crop:
             mask = mask[int(ann['bbox'][1]):int(ann['bbox'][1]+ann['bbox'][3]),
                         int(ann['bbox'][0]):int(ann['bbox'][0]+ann['bbox'][2])]   
         sample["mask"]= mask
         if DEBUG:
-            cv2.imwrite("temp_files/"+image_name+".png",mask*255)     
+            cv2.imwrite("temp_files/"+image_name+".png",(mask*0.5+0.2)*255)     
         if preprocess:
             image_tensor = preprocess[0](sample['image']) #totensor
             mask_tensor = preprocess[0](sample['mask']) #totensor
@@ -243,24 +323,28 @@ def test_dataset():
         ]
     )
     
-    root_dirs = ["gastro_cancer/xiehe_far_1",
-                 "gastro_cancer/xiehe_far_2",
-                 "gastro_cancer/xiangya_far_2021",
-                 "gastro_cancer/xiangya_far_2022"]
-    gc_dataset = GastroCancerDataset(root_dirs[0],
-                                    "crop_images",
-                                    "annotations/crop_instances_default.json",
-                                    transforms = preprocess,with_crop=True,blur_mask=True)
-    
-    for root_dir in root_dirs[1:]:
-        print(root_dir)
-        gc_dataset += GastroCancerDataset(root_dir,
-                                        "crop_images",
-                                        "annotations/crop_instances_default.json",
-                                        transforms = preprocess,blur_mask=True)
-    #gc_dataset[324]
-    for i in range(len(gc_dataset)):
-        gc_dataset[i]    
+    dataset_name='dataset1'
+    dataset_record = dataset_records[dataset_name]
+    #dataset = GastroCancerDataset(root_dirs[0],
+    #                                transforms = preprocess)
+    dataset = None
+    for root_dir in dataset_record:
+        if dataset ==None:
+            dataset = GastroCancerDataset(root_dir,cat_ids=dataset_record[root_dir],dataset_name=dataset_name,
+                                            transforms = preprocess,with_crop=True,
+                                            blur_mask=False,
+                                            dynamic_blur_mask=False,
+                                            blur_kernel_scale=10,
+                                            bbox_extend=1.5) 
+            
+
+        else:       
+            dataset += GastroCancerDataset(root_dir,cat_ids=dataset_record[root_dir],dataset_name=dataset_name,
+                                            transforms = preprocess)
+
+    print("Loading dataset...")
+    for i in tqdm(range(len(dataset))):
+        dataset[i]  
 
 def test_get_test_samples():
     preprocess = SubCompose(
@@ -272,8 +356,8 @@ def test_get_test_samples():
             transforms.Normalize([0.5], [0.5]),
         ]
     )
-    get_test_samples(preprocess,with_crop=True)
+    get_test_samples(preprocess,with_crop=True,blur_mask = False,dynamic_blur_mask=True,bbox_extend=1.5)
 
 if __name__ == '__main__':
-    test_dataset()
-    #test_get_test_samples()
+    #test_dataset()
+    test_get_test_samples()

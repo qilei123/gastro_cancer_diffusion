@@ -5,6 +5,8 @@ from PIL import Image
 
 from utils import *
 
+from tqdm import tqdm
+
 @dataclass
 class TrainingConfig:
     image_size = 256  # the generated image resolution
@@ -17,7 +19,7 @@ class TrainingConfig:
     save_image_epochs = 10
     save_model_epochs = 30
     mixed_precision = 'fp16'  # `no` for float32, `fp16` for automatic mixed precision
-    output_dir = 'output/gastro_images_mask_more_data_256_n500_no_crop'  # the model namy locally and on the HF Hub
+    output_dir = 'output/gastro_images_mask_data1_256_n500_crop_be1.2'  # the model namy locally and on the HF Hub
 
     push_to_hub = False  # whether to upload the saved model to the HF Hub
     hub_private_repo = False  
@@ -28,11 +30,15 @@ class TrainingConfig:
     
     num_train_timesteps = 500
     
-    with_crop = False #输入是用局部（True）还是用整图(False)
+    with_crop = True #输入是用局部（True）还是用整图(False)
     
     blur_mask = False
+    dynamic_blur_mask = True
+    blur_kernel_scale = 20
     
-    bbox_extend = 1.5
+    bbox_extend = 1.2
+    
+    dataset_name='dataset1'
     
     def __str__(self) -> str:
         pass
@@ -40,7 +46,7 @@ class TrainingConfig:
 config = TrainingConfig()
 
 from datasets import load_dataset
-from dataset import SubCompose,GastroCancerDataset,get_test_samples
+from dataset import SubCompose,GastroCancerDataset,get_test_samples,dataset_records
 
 from torchvision import transforms
 
@@ -72,27 +78,25 @@ preprocess = SubCompose(    #transforms.Compose(
 #                                      "annotations/crop_instances_default.json",
 #                                      transforms = preprocess)
 
-dataset_records = {"gastro_cancer/xiehe_far_1":[1], #0
-                "gastro_cancer/xiehe_far_2":[1], #1
-                "gastro_cancer/xiangya_far_2021":[1], #2
-                "gastro_cancer/xiangya_far_2022":[1], #3
-                "gastro_cancer/gastro8-12/2021-2022年癌变已标注/20221111/2021_2022_癌变_20221111":[1,4,5], #4
-                "gastro_cancer/gastro8-12/低级别_2021_2022已标注/2021_2022_低级别_20221110":[1,4,5], #5
-                "gastro_cancer/gastro8-12/协和2022_第一批胃早癌视频裁图已标注/20221115/癌变2022_20221115":[1,4,5], #6
-                "gastro_cancer/gastro8-12/协和2022_第二批胃早癌视频裁图已标注/协和_2022_癌变_2_20221117":[1,4,5], #7
-                "gastro_cancer/gastro8-12/协和21-11月~2022-5癌变已标注/协和2021-11月_2022-5癌变_20221121":[1,4,5], #8
-                }
+
+dataset_record = dataset_records[config.dataset_name]
 #dataset = GastroCancerDataset(root_dirs[0],
 #                                transforms = preprocess)
 dataset = None
-for root_dir in dataset_records:
+for root_dir in dataset_record:
     if dataset ==None:
-        dataset = GastroCancerDataset(root_dir,cat_ids=dataset_records[root_dir],
-                                        transforms = preprocess,with_crop=config.with_crop,blur_mask=config.blur_mask,bbox_extend=config.bbox_extend) 
+        dataset = GastroCancerDataset(root_dir,cat_ids=dataset_record[root_dir],dataset_name=config.dataset_name,
+                                        transforms = preprocess,with_crop=config.with_crop,
+                                        blur_mask=config.blur_mask,
+                                        dynamic_blur_mask=config.dynamic_blur_mask,
+                                        blur_kernel_scale=config.blur_kernel_scale,
+                                        bbox_extend=config.bbox_extend) 
     else:       
-        dataset += GastroCancerDataset(root_dir,cat_ids=dataset_records[root_dir],
+        dataset += GastroCancerDataset(root_dir,cat_ids=dataset_record[root_dir],dataset_name=config.dataset_name,
                                         transforms = preprocess,with_crop=config.with_crop)
-
+print("Loading dataset...")
+for i in tqdm(range(len(dataset))):
+    dataset[i]
 '''
 def transform(examples):
     images = [preprocess(image.convert("RGB")) for image in examples["image"]]
@@ -160,11 +164,15 @@ def evaluate(config, epoch, pipeline):
     # Sample some images from random noise (this is the backward diffusion process).
     # The default pipeline output type is `List[PIL.Image]`
     if config.with_mask:
-        bg_image,mask = get_test_samples(preprocess,config.with_crop,blur_mask=config.blur_mask,bbox_extend=config.bbox_extend)
+        bg_image,mask = get_test_samples(preprocess,config.with_crop,
+                                         blur_mask=config.blur_mask,
+                                         dynamic_blur_mask=config.dynamic_blur_mask,
+                                         blur_kernel_scale=config.blur_kernel_scale,
+                                         bbox_extend=config.bbox_extend)
     else:
         bg_image,mask = None,None #get_test_samples(preprocess)
     
-    images,image_with_bg = pipeline( #该类的代码中，有一行代码image = (image / 2 + 0.5).clamp(0, 1)为denormalize
+    images,image_with_bg0,image_with_bg1 = pipeline( #该类的代码中，有一行代码image = (image / 2 + 0.5).clamp(0, 1)为denormalize
         batch_size = config.eval_batch_size, 
         generator=torch.manual_seed(config.seed),
         bg_image = bg_image,
@@ -178,13 +186,15 @@ def evaluate(config, epoch, pipeline):
     # Make a grid out of the images
     image_grid = make_grid(images, rows=2, cols=2)
     
-    image_with_bg_gird = make_grid(image_with_bg, rows=2, cols=2)
+    image_with_bg_gird0 = make_grid(image_with_bg0, rows=2, cols=2)
+    image_with_bg_gird1 = make_grid(image_with_bg1, rows=2, cols=2)
 
     # Save the images
     test_dir = os.path.join(config.output_dir, "samples")
     os.makedirs(test_dir, exist_ok=True)
     image_grid.save(f"{test_dir}/{epoch:04d}.png")
-    image_with_bg_gird.save(f"{test_dir}/{epoch:04d}_with_bg.png")
+    image_with_bg_gird0.save(f"{test_dir}/{epoch:04d}_with_bg0.png")
+    image_with_bg_gird1.save(f"{test_dir}/{epoch:04d}_with_bg1.png")
 
 
 from accelerate import Accelerator

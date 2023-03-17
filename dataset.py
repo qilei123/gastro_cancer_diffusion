@@ -119,6 +119,24 @@ class GastroCancerDataset(Dataset):
         #以每张图片作为单例进行输入
         pass     
     
+    def load_cache(self):
+        #todo:待开发，采用大文件方式存储数据
+        if self.dataset_name is None:
+            self.cache_datas = []
+        elif not os.path.isfile(self.dataset_name+".cache"):
+            self.cache_datas = []
+        else:
+            fptr = open(self.dataset_name+".cache", "rb")
+            self.cache_datas = pickle.load(fptr)
+            fptr.close() 
+            
+    def save_cache(self):
+        if self.dataset_name is not  None:
+            if not os.path.isfile(self.dataset_name+".cache"):
+                fptr = open(self.dataset_name+".cache", "wb")  # open file in write binary mode
+                pickle.dump(self.cache_datas, fptr)  # dump list data into file 
+                fptr.close()                
+    
     def __len__(self):
         return len(self.instances)    
     

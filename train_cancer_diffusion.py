@@ -19,7 +19,7 @@ from torchvision import transforms
 @dataclass
 class TrainingConfig:
     image_size = 256  # the generated image resolution
-    train_batch_size = 20
+    train_batch_size = 8
     eval_batch_size = 4  # how many images to sample during evaluation
     num_epochs = 1000
     gradient_accumulation_steps = 1
@@ -104,8 +104,10 @@ for root_dir in dataset_record:
         dataset += GastroCancerDataset(root_dir,cat_ids=dataset_record[root_dir],dataset_name=config.dataset_name,
                                         transforms = preprocess,with_crop=config.with_crop)
 print("Loading dataset...")
+dataset.load_cache()
 for i in tqdm(range(len(dataset))):
     dataset[i]
+dataset.save_cache()
 '''
 def transform(examples):
     images = [preprocess(image.convert("RGB")) for image in examples["image"]]

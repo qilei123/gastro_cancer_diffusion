@@ -10,7 +10,7 @@ from tqdm import tqdm
 @dataclass
 class TrainingConfig:
     image_size = 256  # the generated image resolution
-    train_batch_size = 20
+    train_batch_size = 8
     eval_batch_size = 4  # how many images to sample during evaluation
     num_epochs = 1000
     gradient_accumulation_steps = 1
@@ -19,7 +19,7 @@ class TrainingConfig:
     save_image_epochs = 10
     save_model_epochs = 30
     mixed_precision = 'fp16'  # `no` for float32, `fp16` for automatic mixed precision
-    output_dir = 'output/gastro_images_mask_data1_256_n500_crop_be1.2'  # the model namy locally and on the HF Hub
+    output_dir = 'output/gastro_images_mask_data2_256_n800_crop_be1.1_pretrain0'  # the model namy locally and on the HF Hub
 
     push_to_hub = False  # whether to upload the saved model to the HF Hub
     hub_private_repo = False  
@@ -28,7 +28,7 @@ class TrainingConfig:
     
     with_mask = True #是否用mask生成noise掩码
     
-    num_train_timesteps = 500
+    num_train_timesteps = 800
     
     with_crop = True #输入是用局部（True）还是用整图(False)
     
@@ -36,9 +36,11 @@ class TrainingConfig:
     dynamic_blur_mask = True
     blur_kernel_scale = 20
     
-    bbox_extend = 1.2
+    bbox_extend = 1.1
     
-    dataset_name='dataset1'
+    dataset_name='dataset2'
+    
+    pre_trained = False
     
     def __str__(self) -> str:
         pass
@@ -110,30 +112,32 @@ import torch
 train_dataloader = torch.utils.data.DataLoader(dataset, batch_size=config.train_batch_size, shuffle=True)
 
 from diffusers import UNet2DModel
-
-model = UNet2DModel(
-    sample_size=config.image_size,  # the target image resolution
-    in_channels=3,  # the number of input channels, 3 for RGB images
-    out_channels=3,  # the number of output channels
-    layers_per_block=2,  # how many ResNet layers to use per UNet block
-    block_out_channels=(128, 128, 256, 256, 512, 512),  # the number of output channes for each UNet block
-    down_block_types=( 
-        "DownBlock2D",  # a regular ResNet downsampling block
-        "DownBlock2D", 
-        "DownBlock2D", 
-        "DownBlock2D", 
-        "AttnDownBlock2D",  # a ResNet downsampling block with spatial self-attention
-        "DownBlock2D",
-    ), 
-    up_block_types=(
-        "UpBlock2D",  # a regular ResNet upsampling block
-        "AttnUpBlock2D",  # a ResNet upsampling block with spatial self-attention
-        "UpBlock2D", 
-        "UpBlock2D", 
-        "UpBlock2D", 
-        "UpBlock2D"  
-      ),
-)
+if config.pre_trained:
+    model = UNet2DModel.from_pretrained("google/ddpm-celebahq-256")
+else:
+    model = UNet2DModel(
+        sample_size=config.image_size,  # the target image resolution
+        in_channels=3,  # the number of input channels, 3 for RGB images
+        out_channels=3,  # the number of output channels
+        layers_per_block=2,  # how many ResNet layers to use per UNet block
+        block_out_channels=(128, 128, 256, 256, 512, 512),  # the number of output channes for each UNet block
+        down_block_types=( 
+            "DownBlock2D",  # a regular ResNet downsampling block
+            "DownBlock2D", 
+            "DownBlock2D", 
+            "DownBlock2D", 
+            "AttnDownBlock2D",  # a ResNet downsampling block with spatial self-attention
+            "DownBlock2D",
+        ), 
+        up_block_types=(
+            "UpBlock2D",  # a regular ResNet upsampling block
+            "AttnUpBlock2D",  # a ResNet upsampling block with spatial self-attention
+            "UpBlock2D", 
+            "UpBlock2D", 
+            "UpBlock2D", 
+            "UpBlock2D"  
+        ),
+    )
 
 from diffusers import DDPMScheduler
 

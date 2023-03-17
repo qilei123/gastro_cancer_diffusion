@@ -364,8 +364,10 @@ def test_get_test_samples():
 def test_patchs():
     test_images_record = open('choose_test_gastro_images.txt')
     
-    patchs_dir = "output/gastro_images_mask_data1_256_n600_crop_be1/samples/0279.png"
+    #patchs_dir = "output/gastro_images_mask_data1_256_n600_crop_be1/samples/0279.png"
     #patchs_dir = "output/gastro_images_mask_data1_256_n500_crop_be1/samples/0439.png"
+    
+    patchs_dir = "output/gastro_images_mask_data2_256_nr800_crop_be1/samples/0149.png"
     
     patchs = Image.open(patchs_dir)
     
@@ -402,17 +404,84 @@ def test_patchs():
         patch_image = Image.new("RGB",image.size,(0,0,0))
         patch_image.paste(patch, (int(ann['bbox'][0]),int(ann['bbox'][1])))
         
-        mask = ndimage.binary_erosion(mask,iterations=25).astype(mask.dtype)
+        mask = ndimage.binary_erosion(mask,iterations=20).astype(mask.dtype)
         
         mask = Image.fromarray(mask*255/2).convert('L')
-        mask = mask.filter(ImageFilter.GaussianBlur(15))
+        mask = mask.filter(ImageFilter.GaussianBlur(10))
         image.paste(patch_image, (0,0),mask)
         
         image.save(os.path.join("results",image_name))
+
+from diffusers import DiffusionPipeline
+def test_diffusion_inpainting():
+    
+    pipe = DiffusionPipeline.from_pretrained(    
+                        "runwayml/stable-diffusion-inpainting",
+                        custom_pipeline="img2img_inpainting",
+                        torch_dtype=torch.float16)
+    
+    pipe.safety_checker = lambda images, clip_input: (images, False)
+    
+    pipe = pipe.to('cuda:3')
+    
+    test_images_record = open('choose_test_gastro_images.txt')
+    
+    #patchs_dir = "output/gastro_images_mask_data1_256_n600_crop_be1/samples/0279.png"
+    #patchs_dir = "output/gastro_images_mask_data1_256_n500_crop_be1/samples/0439.png"
+    
+    patchs_dir = "output/gastro_images_mask_data2_256_nr800_crop_be1/samples/0149.png"
+    
+    patchs = Image.open(patchs_dir)
+    
+    patch_images = []
+    patch_images.append(patchs.crop((0,0,patchs.width/2,patchs.height/2)))
+    patch_images.append(patchs.crop((patchs.width/2,0,patchs.width,patchs.height/2)))
+    patch_images.append(patchs.crop((0,patchs.height/2,patchs.width/2,patchs.height)))
+    patch_images.append(patchs.crop((patchs.width/2,patchs.height/2,patchs.width,patchs.height)))
+    
+    records = []
+    
+    line = test_images_record.readline()
+    
+    #bbox_extend-=1
+    
+    while line:
         
+        records.append(line[:-1])
+        
+        line = test_images_record.readline()
+        
+    image_list = records[::2]
+    ann_list = records[1::2]
+    
+    
+    for image_name,ann,patch in zip(image_list,ann_list,patch_images):
+        
+        ann = json.loads(ann)    
+        image = Image.open(os.path.join("gastro_images_test",image_name))
+
+        mask = poly2mask(*polygon2vertex_coords(ann["segmentation"][0]),(image.height,image.width))
+        
+        patch = patch.resize((int(ann['bbox'][2]),int(ann['bbox'][3])))
+        patch_image = Image.new("RGB",image.size,(0,0,0))
+        patch_image.paste(patch, (int(ann['bbox'][0]),int(ann['bbox'][1])))
+        
+        #mask = ndimage.binary_erosion(mask,iterations=20).astype(mask.dtype)
+        
+        #mask = Image.fromarray(mask*255/2).convert('L')
+        #mask = mask.filter(ImageFilter.GaussianBlur(10))
+        #image.paste(patch_image, (0,0),mask)
+        img_resize = (512,512)
+        init_image = image.convert("RGB").resize(img_resize)
+        inner_image = patch_image.convert("RGBA").resize(img_resize)
+        mask_image = Image.fromarray(mask*255).convert("RGB").resize(img_resize)
+        prompt = ""
+        image = pipe(prompt=prompt, image=init_image, inner_image=inner_image, mask_image=mask_image).images[0]        
+        image.save(os.path.join("results",image_name))
 
 if __name__ == '__main__':
     #test_dataset()
     #test_get_test_samples()
-    test_patchs()
+    #test_patchs()
+    test_diffusion_inpainting()
     pass

@@ -7,10 +7,19 @@ from utils import *
 
 from tqdm import tqdm
 
+from diffusers import DDPMScheduler,DDIMScheduler
+from diffusers import DDPMPipeline,DDPMPipelineMask,DDIMPipelineMask
+
+from diffusers import UNet2DModel
+from datasets import load_dataset
+from dataset import SubCompose,GastroCancerDataset,get_test_samples,dataset_records
+
+from torchvision import transforms
+
 @dataclass
 class TrainingConfig:
     image_size = 256  # the generated image resolution
-    train_batch_size = 8
+    train_batch_size = 20
     eval_batch_size = 4  # how many images to sample during evaluation
     num_epochs = 1000
     gradient_accumulation_steps = 1
@@ -19,7 +28,7 @@ class TrainingConfig:
     save_image_epochs = 10
     save_model_epochs = 30
     mixed_precision = 'fp16'  # `no` for float32, `fp16` for automatic mixed precision
-    output_dir = 'output/gastro_images_mask_data2_256_n800_crop_be1.1_pretrain0'  # the model namy locally and on the HF Hub
+    output_dir = 'output/gastro_images_mask_data2_256_ddim50_crop_be1.1_blur1_dblur0'  # the model namy locally and on the HF Hub
 
     push_to_hub = False  # whether to upload the saved model to the HF Hub
     hub_private_repo = False  
@@ -28,29 +37,27 @@ class TrainingConfig:
     
     with_mask = True #是否用mask生成noise掩码
     
-    num_train_timesteps = 800
-    
     with_crop = True #输入是用局部（True）还是用整图(False)
     
-    blur_mask = False
-    dynamic_blur_mask = True
+    blur_mask = True
+    dynamic_blur_mask = False
     blur_kernel_scale = 20
     
     bbox_extend = 1.1
     
     dataset_name='dataset2'
     
-    pre_trained = False
+    scheduler = DDIMScheduler
+    num_train_timesteps = 50 #800
+    
+    pipeline = DDIMPipelineMask
     
     def __str__(self) -> str:
         pass
 
 config = TrainingConfig()
 
-from datasets import load_dataset
-from dataset import SubCompose,GastroCancerDataset,get_test_samples,dataset_records
 
-from torchvision import transforms
 
 preprocess = SubCompose(    #transforms.Compose(
     [
@@ -107,41 +114,39 @@ def transform(examples):
 dataset.set_transform(transform)
 '''
 
-import torch
+
 
 train_dataloader = torch.utils.data.DataLoader(dataset, batch_size=config.train_batch_size, shuffle=True)
 
-from diffusers import UNet2DModel
-if config.pre_trained:
-    model = UNet2DModel.from_pretrained("google/ddpm-celebahq-256")
-else:
-    model = UNet2DModel(
-        sample_size=config.image_size,  # the target image resolution
-        in_channels=3,  # the number of input channels, 3 for RGB images
-        out_channels=3,  # the number of output channels
-        layers_per_block=2,  # how many ResNet layers to use per UNet block
-        block_out_channels=(128, 128, 256, 256, 512, 512),  # the number of output channes for each UNet block
-        down_block_types=( 
-            "DownBlock2D",  # a regular ResNet downsampling block
-            "DownBlock2D", 
-            "DownBlock2D", 
-            "DownBlock2D", 
-            "AttnDownBlock2D",  # a ResNet downsampling block with spatial self-attention
-            "DownBlock2D",
-        ), 
-        up_block_types=(
-            "UpBlock2D",  # a regular ResNet upsampling block
-            "AttnUpBlock2D",  # a ResNet upsampling block with spatial self-attention
-            "UpBlock2D", 
-            "UpBlock2D", 
-            "UpBlock2D", 
-            "UpBlock2D"  
-        ),
-    )
 
-from diffusers import DDPMScheduler
 
-noise_scheduler = DDPMScheduler(num_train_timesteps=config.num_train_timesteps)
+model = UNet2DModel(
+    sample_size=config.image_size,  # the target image resolution
+    in_channels=3,  # the number of input channels, 3 for RGB images
+    out_channels=3,  # the number of output channels
+    layers_per_block=2,  # how many ResNet layers to use per UNet block
+    block_out_channels=(128, 128, 256, 256, 512, 512),  # the number of output channes for each UNet block
+    down_block_types=( 
+        "DownBlock2D",  # a regular ResNet downsampling block
+        "DownBlock2D", 
+        "DownBlock2D", 
+        "DownBlock2D", 
+        "AttnDownBlock2D",  # a ResNet downsampling block with spatial self-attention
+        "DownBlock2D",
+    ), 
+    up_block_types=(
+        "UpBlock2D",  # a regular ResNet upsampling block
+        "AttnUpBlock2D",  # a ResNet upsampling block with spatial self-attention
+        "UpBlock2D", 
+        "UpBlock2D", 
+        "UpBlock2D", 
+        "UpBlock2D"  
+      ),
+)
+
+
+
+noise_scheduler = config.scheduler(num_train_timesteps=config.num_train_timesteps)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
 
@@ -153,7 +158,7 @@ lr_scheduler = get_cosine_schedule_with_warmup(
     num_training_steps=(len(train_dataloader) * config.num_epochs),
 )
 
-from diffusers import DDPMPipeline,DDPMPipelineMask
+
 
 import math
 
@@ -279,7 +284,7 @@ def train_loop(config, model, noise_scheduler, optimizer, train_dataloader, lr_s
 
         # After each epoch you optionally sample some demo images with evaluate() and save the model
         if accelerator.is_main_process:
-            pipeline = DDPMPipelineMask(unet=accelerator.unwrap_model(model), scheduler=noise_scheduler)
+            pipeline = config.pipeline(unet=accelerator.unwrap_model(model), scheduler=noise_scheduler)
 
             if (epoch + 1) % config.save_image_epochs == 0 or epoch == config.num_epochs - 1:
                 evaluate(config, epoch, pipeline)

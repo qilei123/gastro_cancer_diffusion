@@ -104,9 +104,9 @@ for root_dir in dataset_record:
         dataset += GastroCancerDataset(root_dir,cat_ids=dataset_record[root_dir],dataset_name=config.dataset_name,
                                         transforms = preprocess,with_crop=config.with_crop)
 print("Loading dataset...")
-dataset.load_cache()
-for i in tqdm(range(len(dataset))):
-    dataset[i]
+if not dataset.load_cache():
+    for i in tqdm(range(len(dataset))):
+        dataset[i]
 dataset.save_cache()
 '''
 def transform(examples):

@@ -129,6 +129,8 @@ class GastroCancerDataset(Dataset):
             fptr = open(self.dataset_name+".cache", "rb")
             self.cache_datas = pickle.load(fptr)
             fptr.close() 
+            return True
+        return False
             
     def save_cache(self):
         if self.dataset_name is not  None:
